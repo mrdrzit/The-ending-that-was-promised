@@ -1,0 +1,2 @@
+FPS = 30
+MIN_EVENT_FRAMES = 3
