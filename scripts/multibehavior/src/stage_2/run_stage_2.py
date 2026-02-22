@@ -8,7 +8,7 @@ from src.utils.build_bout_counts import build_animal_bout_counts
 from src.utils.build_latency_table import build_latency_table
 from src.utils.build_duration_table import build_approach_duration_table, summarize_approach_durations
 from src.utils.build_geometry_table import build_approach_geometry_table
-from src.utils.build_sequence_archetypes import build_sequence_archetype_table
+from src.utils.build_sequence_archetypes import build_sequence_archetype_table, prism_grouped_from_long
 from src.utils.build_latent_indices import build_latent_indices_table
 from src.utils.build_transition_matrices import build_transition_matrix_by_phase, build_transition_matrix_by_context
 
@@ -29,7 +29,70 @@ def main():
     sequences = load_events("sequences")
     print("Loaded event tables")
 
-    sequence_archetypes = build_sequence_archetype_table(sequences)
+    sequence_archetypes, long_form_df = build_sequence_archetype_table(sequences, return_prism=True)
+
+    def per_animal_composition(df_long, outcomes=("abortive_retreat", "approach_only", "collision")):
+        """
+        Takes your long per-animal df:
+        group, phase, context, animal_name, outcome_type, count, total, proportion
+
+        Returns a wide per-animal table with zeros filled, where rows sum to 1.
+        """
+        # pivot proportions to wide
+        wide = (
+            df_long.pivot_table(
+                index=["group", "phase", "context", "animal_name"],
+                columns="outcome_type",
+                values="proportion",
+                aggfunc="first"
+            )
+            .reindex(columns=list(outcomes))  # enforce order
+            .fillna(0.0)                      # missing outcome => 0
+            .reset_index()
+        )
+
+        # optional: add a sum check column
+        wide["sum_check"] = wide[list(outcomes)].sum(axis=1)
+
+        return wide
+
+    def prism_from_wide(wide, outcome_col, value_col=None,
+                        phase_order=("treino", "teste"), context_order=("A", "B")):
+        """
+        wide: output of per_animal_composition()
+        outcome_col: one of the wide columns like 'collision', 'approach_only', 'abortive_retreat'
+        """
+        d = wide.copy()
+
+        vals = {}
+        nmax = 0
+        for ph in phase_order:
+            for cx in context_order:
+                v = (
+                    d.loc[(d["phase"] == ph) & (d["context"] == cx)]
+                    .sort_values("animal_name")[outcome_col]
+                    .tolist()
+                )
+                vals[(ph, cx)] = v
+                nmax = max(nmax, len(v))
+
+        cols = [f"{context_order[0]}_{i+1}" for i in range(nmax)] + [f"{context_order[1]}_{i+1}" for i in range(nmax)]
+        out = pd.DataFrame(index=list(phase_order), columns=cols, dtype=float)
+        out.index.name = "phase"
+
+        for ph in phase_order:
+            a = vals[(ph, context_order[0])] + [pd.NA] * (nmax - len(vals[(ph, context_order[0])]))
+            b = vals[(ph, context_order[1])] + [pd.NA] * (nmax - len(vals[(ph, context_order[1])]))
+            out.loc[ph, :] = a + b
+
+        return out
+
+    wide = per_animal_composition(long_form_df)
+
+    prism_abortive = prism_from_wide(wide, "abortive_retreat").to_excel(os.path.join(EXCEL, "prism_abortive_retreat.xlsx"))
+    prism_approach = prism_from_wide(wide, "approach_only").to_excel(os.path.join(EXCEL, "prism_approach_only.xlsx"))
+    prism_collision = prism_from_wide(wide, "collision").to_excel(os.path.join(EXCEL, "prism_collision.xlsx"))
+
     sequence_archetypes.to_parquet(os.path.join(DERIVED, "sequence_archetypes.parquet"))
     sequence_archetypes.to_excel(os.path.join(EXCEL, "sequence_archetypes.xlsx"), index=False)
     print("Saved sequence archetype table")
